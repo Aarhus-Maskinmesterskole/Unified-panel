@@ -7,14 +7,136 @@ Efter dette modul skal I kunne:
 - Konfigurere Unified Runtime til at sende måledata til en MQTT-broker
 - Installere og konfigurere Telegraf til at abonnere på MQTT-data og videresende dem til Microsoft SQL Server
 - Evaluere fordele og ulemper ved at anvende MQTT og Telegraf i industrielt dataintegrationsarbejde
+  
+## 🧠 Forudsætninger – Teknisk overblik og detaljeret installationsvejledning (Windows og Linux)
 
-## 🧠 Forudsætninger
-Før I går i gang med dette modul, skal følgende være opfyldt:
-- I har adgang til en MQTT-broker (f.eks. Mosquitto installeret lokalt eller på netværket)
-- Unified Runtime kører på et Comfort Panel eller en PC, og er i stand til at sende MQTT-data (via JavaScript eller Siemens Edge Connect)
-- Telegraf-agent er installeret og har skriveadgang til SQL Server
-- I er fortrolige med JSON-struktur, portnumre og grundlæggende netværksforbindelser
-- SQL Server indeholder en `TagLog`-tabel med passende felter (fx `timestamp`, `tag`, `value`)
+Inden I går i gang med dette modul, er det helt centralt, at både systemkomponenter, værktøjer og netværksforbindelser er korrekt sat op. Dette afsnit beskriver alle forudsætninger og installationsvejledninger, der sikrer en velfungerende MQTT → Telegraf → MSSQL integration. Hvert element er uddybet med både formål, teknisk kontekst og praktiske kommandoer – til både Windows og Linux.
+
+---
+
+### 1. MQTT-broker – Installation, opsætning og validering
+**Formål:** En MQTT-broker fungerer som centralt bindeled mellem datakilder (publishers) og datamodtagere (subscribers). Den anvendes her som middleware mellem Unified Runtime og Telegraf.
+
+**Installation på Windows (Mosquitto):**
+1. Download installationspakken fra: https://mosquitto.org/download/
+2. Kør `.exe`-installeren, og vælg at installere som Windows Service
+3. Tilføj følgende til `mosquitto.conf` (fx under `C:\Program Files\mosquitto`):
+```conf
+listener 1883
+allow_anonymous true
+```
+4. Start Mosquitto via Services eller med:
+```powershell
+Start-Service mosquitto
+```
+5. Verificér med `mosquitto_sub.exe` (findes i klientpakken):
+```powershell
+mosquitto_sub -t unified/data -v
+```
+
+> 💡 Installer Visual C++ redistributables, hvis du får fejl ved opstart.
+
+**Installation på Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install mosquitto mosquitto-clients
+```
+
+**Redigér konfiguration:**
+```conf
+default_listener 1883
+allow_anonymous true
+```
+
+**Start tjeneste:**
+```bash
+sudo systemctl enable mosquitto
+sudo systemctl start mosquitto
+```
+
+---
+
+### 2. Unified Runtime – Opsætning som MQTT-publisher
+**Formål:** Unified Runtime fungerer som sensorinterface og datakilde, og sender målinger som JSON-payloads til en MQTT-topic.
+
+**Forudsætninger:**
+- Systemet skal være et Siemens Comfort Panel eller Unified PC Runtime med JavaScript-aktiveret scripting
+- Runtime-enheden skal kunne nå brokerens IP og port 1883 uden firewallblokering
+
+**Eksempel på JSON-format og publish-kald:**
+```javascript
+let payload = `{"timestamp":"${Unified.Time.Now()}","tag":"TempSensor1","value":${Tag_TempSensor1}}`;
+MqttClient.Publish("unified/data", payload);
+```
+> Sørg for, at `MqttClient` er korrekt initialiseret. Der kan konfigureres med username/password, QoS og retain-flag.
+
+Verificér output med MQTT-klient (fx `mosquitto_sub`) fra en anden maskine.
+
+---
+
+### 3. Telegraf – Installation, konfiguration og kobling til SQL Server
+**Formål:** Telegraf agerer som dataopsamler og sender. Den abonnerer på MQTT-topic’en og skriver værdier videre til en SQL Server-instans.
+
+**Installation på Windows:**
+1. Download fra: https://portal.influxdata.com/downloads/
+2. Pak ud til f.eks. `C:\Telegraf`
+3. Redigér `telegraf.conf`
+4. Kør Telegraf med:
+```powershell
+cd C:\Telegraf
+telegraf.exe --config telegraf.conf
+```
+> Du kan også oprette Telegraf som Windows Service med NSSM (Non-Sucking Service Manager) for automatisk opstart.
+
+**Eksempel på konfiguration:**
+```toml
+[[inputs.mqtt_consumer]]
+  servers = ["tcp://localhost:1883"]
+  topics = ["unified/data"]
+  data_format = "json"
+  tag_keys = ["tag"]
+  json_string_fields = ["timestamp"]
+
+[[outputs.sqlserver]]
+  server = "Server=localhost;Port=1433;Database=WorkshopDB;User Id=unified;Password=demo123;"
+  table = "TagLog"
+  include_field = ["value"]
+  fieldpass = ["value"]
+  tagpass = ["tag"]
+```
+
+> 💡 Telegraf til Windows kræver ODBC-driver og en fungerende SQL Server på port 1433. Brug SQL Server Configuration Manager til at aktivere TCP/IP.
+
+**Fejlsøgning:**
+- Tjek `telegraf.log`
+- Brug `telegraf.exe --test` for at debugge inputs
+
+---
+
+### 4. SQL Server – Strukturkrav til databasen
+**Formål:** SQL Server fungerer som mål for al opsamlet data. Strukturen i databasen skal være i overensstemmelse med det dataformat, Unified sender.
+
+**Eksempel på passende tabeldefinition:**
+```sql
+CREATE TABLE TagLog (
+  timestamp DATETIME,
+  tag NVARCHAR(100),
+  value FLOAT
+);
+```
+> Det er vigtigt, at kolonnenavne matcher felterne i JSON-payloaden, og at datatyperne stemmer overens med det Telegraf sender.
+
+---
+
+### 5. Netværks- og formatforståelse
+For at kunne implementere og fejlsøge løsningen korrekt, forventes det, at I har grundlæggende viden om:
+- Hvordan MQTT-topics navngives og organiseres hierarkisk (fx `unified/data`, `unified/status`)
+- Hvad Quality of Service (QoS) betyder i MQTT (QoS 0, 1, 2)
+- Hvilke TCP-porte der skal åbnes mellem Unified, broker og Telegraf (typisk 1883 internt og evt. 8883 til TLS)
+- Hvordan JSON-struktur læses og valideres – fx med `jq`, online JSON-validators eller debug i Node-RED/Telegraf
+- Hvordan man inspicerer logfiler og statusoutput fra Telegraf og Mosquitto
+
+---
 
 ## 📡 Systemarkitektur og datastrøm
 ```
