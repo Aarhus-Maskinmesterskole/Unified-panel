@@ -15,6 +15,7 @@ Hvert modul fokuserer på en specifik metode til dataoverførsel, og giver jer h
 | `05_opcua_nodered` | OPC UA-kommunikation til Node-RED og videreskrivning til MSSQL |
 | `06_csv_import` | Eksport af CSV fra Unified + import i SQL med BULK INSERT eller PowerShell |
 | `07_mqtt_telegraf_sql` | MQTT publicering og dataflow via Telegraf til MSSQL |
+|  `08_Sammenligning_af_dataintegrationsmetoder` | Sammenligning af dataintegrationsmetoder |
 
 ## 📁 Struktur i hvert modul
 
