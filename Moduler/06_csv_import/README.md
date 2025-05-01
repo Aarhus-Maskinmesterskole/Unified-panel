@@ -1,120 +1,93 @@
-# ⚙️ Komponentopsætning: OPC UA og Node-RED til MSSQL (Udvidet)
+# 🧩 Modul 06 – CSV og BULK INSERT til MSSQL
 
-## 1. Unified Runtime (OPC UA-server)
+## 🎯 Læringsmål
+Efter dette modul skal I kunne:
+- Eksportere og formatere CSV-filer korrekt fra Unified Runtime (Comfort Panel eller PC Runtime)
+- Opsætte SQL Server til at modtage og integrere CSV-data via `BULK INSERT`, PowerShell eller SSIS
+- Forstå fordele, begrænsninger og fejlkilder ved filbaseret dataudveksling
+- Argumentere for, hvornår CSV-baseret integration er den mest hensigtsmæssige løsning i industrien
 
-**Systemkrav og forberedelse:**
-- Unified Comfort Panel eller Unified PC Runtime med firmware, der understøtter OPC UA-serverfunktionalitet
-- TIA Portal (V17 eller nyere) installeret til konfiguration
-- Adgang til projektfil, hvor relevante tags er oprettet og kan eksponeres
+## 🧠 Forudsætninger
+For at kunne gennemføre øvelserne i dette modul skal I:
+- Have adgang til et Unified-system med skriveadgang til lokalt filsystem eller eksternt medie (USB, SD, net share)
+- Have Microsoft SQL Server installeret og konfigureret til at tillade `BULK INSERT`
+- Være fortrolige med grundlæggende SQL, TIA Portal-scripting (JavaScript i Unified), og have kendskab til Windows-sti-format og administratorrettigheder
+- Have installeret evt. værktøjer såsom SSMS, PowerShell og SQL Server Integration Services (valgfrit)
 
-**Formål:**
-OPC UA-serveren i Unified Runtime muliggør sikker og standardiseret datatilgængelighed fra HMI/PLC til tredjepartsapplikationer som fx Node-RED. Dette modul fokuserer på opsætningen, så tags kan læses live fra eksterne systemer.
+## ⚙️ Systemarkitektur og datastrøm
+```
+[Unified Runtime] -- (CSV-fil genereres lokalt) --> [Del mappe / Net share / USB] -- (Importer via script eller job) --> [MSSQL tabel]
+```
+Typiske eksportplaceringer:
+- Comfort Panel: `/usb/export.csv`, `/sdcard/export.csv`
+- Unified PC Runtime: `C:\data\csv\sensorlog.csv`, `\NAS\share\mssqlimport.csv`
 
-**Trinvis konfiguration i TIA Portal:**
-1. Navigér til fanen **Kommunikation** > **OPC UA Server** under projektets runtime-indstillinger
-2. Marker "Aktivér OPC UA-server"
-3. Indtast endpoint-adresse, f.eks.:
-   ```
-   opc.tcp://192.168.1.100:4840
-   ```
-4. Vælg ønsket sikkerhedsniveau:
-   - `None` (anbefales til test og undervisning)
-   - `Basic256Sha256` med certifikatudveksling (kræver nøglepar og godkendelse)
-5. Klik på "Generér certifikat" og accepter det lokalt for test
-6. Gå til **Datablokke**, og marker relevante variabler som:
-   - "Accessible from HMI"
-   - "Accessible from OPC UA"
-   - Tildel navngivne NodeID’er hvis nødvendigt (fx `ns=2;s=Tag_TempSensor1`)
-7. Kompiler og download til panel eller PC Runtime
+## 🔧 Trinvis konfiguration af CSV-import
 
-> 💡 Tip: Hvis OPC UA-serveren ikke starter, kan det skyldes IP-konflikt, portblokering eller manglende certifikatudveksling.
-
-## 2. Node-RED konfiguration
-
-**Forudsætninger:**
-- Node-RED installeret lokalt, i Docker-container eller på en edge-PC
-- Tilgængelig forbindelse til Unified Runtime via netværk
-- Følgende nodes installeret:
-  - `node-red-contrib-opcua` (for at kunne tilgå OPC UA servere)
-  - `node-red-node-mssql` (for integration med Microsoft SQL Server)
-
-### A. OPC UA input (Node-RED som klient)
-
-**Opsætning:**
-1. Træk en `OPC UA Client` node ind på flowet
-2. Dobbeltklik for at åbne konfigurationen
-3. Indtast endpoint:
-   ```
-   opc.tcp://192.168.1.100:4840
-   ```
-4. Tryk “Browse” og vælg tag (eksempel):
-   ```
-   ns=2;s=Tag_TempSensor1
-   ```
-5. Vælg "Poll interval": 5000 ms (5 sekunder) eller brug "Subscribe on change" hvis din runtime understøtter det
-6. Tilføj en `function` node direkte efter OPC UA-node med følgende kode:
+### A. Unified Runtime (skriv CSV-fil via script)
+Eksempel: skriv en ny fil med header + en enkelt måling:
 ```javascript
-try {
-    msg.payload = msg.payload.value;
-    return msg;
-} catch (err) {
-    node.error("Fejl ved læsning af OPC UA-værdi", msg);
-    return null;
-}
+let header = "Timestamp,TagName,TagValue\n";
+let row = `${Unified.Time.Now()},TempSensor1,${Tag_TempSensor1}\n`;
+fs.writeText("/usb/export.csv", header + row);
 ```
-Dette udtrækker selve værdien fra OPC UA-pakken og konverterer det til et simpelt tal, som kan sendes videre til SQL. Den inkluderede `try/catch`-blok beskytter mod runtime-fejl og hjælper ved fejlsøgning.
+Hvis filen allerede findes og du vil logge løbende:
+```javascript
+let row = `${Unified.Time.Now()},TempSensor1,${Tag_TempSensor1}\n`;
+fs.appendText("/usb/export.csv", row);
+```
+> 💡 Husk at CSV-formatet skal matche destinationstabel præcist – inkl. datatype og rækkefølge.
 
-### B. SQL output
+### B. Import til MSSQL
 
-**Opsætning af MSSQL-node:**
-1. Træk en `MSSQL` node ind i flowet
-2. Konfigurer databasen:
-   - **Server**: `192.168.1.5`
-   - **Port**: `1433`
-   - **Database**: `WorkshopDB`
-   - **Brugernavn**: `unified`
-   - **Adgangskode**: `demo123`
-
-💡 Sørg for, at Microsoft ODBC Driver for SQL Server (f.eks. version 17 eller 18) er installeret på det system, hvor Node-RED kører. MSSQL-noden bruger denne driver til at kommunikere med databasen.
-
-3. SQL-kommando (uden timestamp):
+#### Mulighed 1: SQL BULK INSERT
 ```sql
-INSERT INTO TagLog (TagName, TagValue) VALUES ('TempSensor1', {{payload}})
+BULK INSERT WorkshopDB.dbo.TagLog
+FROM 'D:\Unified\csv\export.csv'
+WITH (
+    FIRSTROW = 2,
+    FIELDTERMINATOR = ',',
+    ROWTERMINATOR = '\n',
+    TABLOCK
+);
 ```
+> SQL Server-tjenesten skal have læserettigheder til stien – del evt. mappen med "Everyone" (kun til test).
+> Sørg for at søgesti er lokal ift. SQL Server – ikke klientens filsti.
 
-4. SQL-kommando (med automatisk timestamp via SQL Server):
-```sql
-INSERT INTO TagLog (TagName, TagValue, Timestamp) VALUES ('TempSensor1', {{payload}}, GETDATE())
+#### Mulighed 2: PowerShell automatisering
+```powershell
+Invoke-Sqlcmd -ServerInstance "localhost" -Database "WorkshopDB" -Query "
+BULK INSERT TagLog FROM 'D:\Unified\csv\export.csv'
+WITH (FIELDTERMINATOR = ',', ROWTERMINATOR = '\n')"
 ```
-> Bemærk: `{{payload}}` bliver automatisk erstattet af det indkommende tal fra `function`-noden.
+- Planlæg kørslen i **Windows Task Scheduler** til fx hvert 5. minut
+- Log evt. output og fejl med `Try/Catch`-blok og `Out-File`
 
-### C. Fuldt flow eksempel
+#### Mulighed 3: SSIS (SQL Server Integration Services)
+- Opret et "Flat File Source" → "OLE DB Destination" flow
+- Map kolonnerne korrekt og håndtér fejl i separate output
+- Kør via SQL Agent Job eller SSIS GUI
+> SSIS giver ekstra værdi ved transformationer, validering og logik (fx hvis CSV-indholdet skal renses eller beriges)
 
-Et simpelt Node-RED flow kunne se således ud:
-```text
-[OPC UA Client node]
-      ↓
-[Function node: udtræk værdi]
-      ↓
-[MSSQL node]
-```
-For fejlhåndtering og overvågning kan du tilføje:
-- `debug` node (for at se output af hvert trin)
-- `catch` node (fanger fejl i flowet)
-- `status` node (viser forbindelsesstatus og hjælper med fejlsøgning)
+## 📂 Aktivitet
+1. Programmer Unified til at eksportere CSV med mindst ét målepunkt
+2. Indlæs filen til MSSQL via én af de tre metoder
+3. Verificér import og dataintegritet (korrekt antal rækker, tidspunkter og værdier)
+4. Dokumentér evt. fejlscenarier (forkert sti, manglende fil, forkert format)
 
-### D. Eksempel på komplet flowkode (eksporteret JSON)
-> (Dette afsnit kan evt. laves som `.json` fil til import i Node-RED – valgfrit i din undervisning)
+## 📌 Output til portfolio
+- CSV-fil eksempel (1-3 rækker) med korrekt format
+- Skærmbillede fra SQL Server, hvor data er blevet importeret
+- SQL/BULK INSERT-kommando, PowerShell-script eller SSIS-flow
+- Egen refleksion over metoden og evt. forbedringsforslag (filnavngivning, fejlhåndtering, backup)
+
+## 🔍 Refleksionsspørgsmål
+- Hvad gør CSV-import mere robust eller svagere sammenlignet med ODBC- eller OPC UA-baseret datalogning?
+- Hvordan håndterer man “missed writes” i tilfælde af filkorruption eller netværksfejl?
+- Hvad er fordelene ved at navngive CSV-filer unikt (timestamp i filnavn)?
+- Hvordan vil du implementere rollback eller dublet-check, hvis data importeres to gange?
 
 ---
 
-## ✅ Konklusion
-Denne komponentopsætning muliggør en moderne og fleksibel integration mellem Siemens Unified Runtime og MSSQL ved brug af OPC UA og Node-RED. Arkitekturen er oplagt i edge- og mellemstore IIoT-scenarier, hvor man ønsker let deployment, standardprotokoller og scriptfri SQL-kommunikation.
-
-Fordelen ved denne metode er:
-- Nem adgang til PLC/HMI-data
-- Ingen Siemens-specifik software efter HMI
-- Fleksibel visualisering og fejlhåndtering i Node-RED
-
-> ⚠️ Overvej altid at sikre forbindelser med certifikat og bruge `Encrypt=yes` i SQL-forbindelser i produktionsmiljøer.
+I næste modul bevæger vi os væk fra filbaseret kommunikation og ind i **publish/subscribe-verdenen**, hvor I skal lære at bruge **MQTT som datakanal** mellem Unified og SQL Server via Telegraf og en MQTT-broker.
 
